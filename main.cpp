@@ -3,11 +3,12 @@ using namespace std;
 
 /*
 Heuristic controller without simulator.
-Variant v4: seeded pseudo-random multi-segment sweeps.
- - Deterministic RNG seeded by input (k,n,m,s and color grid hash)
- - Alternate/randomize target horizontal speeds and hold lengths
- - Insert occasional resets and decorrelation nudges
-Goal: diversify trajectories per testcase to raise expected reward.
+Variant v5: coprime-target sweeps + micro-oscillations.
+ - Deterministic seeding by input and grid so behavior is fixed per test
+ - Sweep between ±v where v are chosen from a coprime-ish set to
+   diversify angles (e.g., primes) scaled by n
+ - Between sweeps, insert micro oscillations (EA / DB pairs) to
+   decorrelate paths without drifting vx
 */
 
 static uint64_t splitmix64(uint64_t x){
@@ -16,16 +17,10 @@ static uint64_t splitmix64(uint64_t x){
     x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
     return x ^ (x >> 31);
 }
-
-struct RNG {
-    uint64_t s;
-    explicit RNG(uint64_t seed): s(seed){}
+struct RNG{
+    uint64_t s; explicit RNG(uint64_t seed):s(seed){}
     uint64_t next(){ return s = splitmix64(s); }
-    int uniform_int(int l,int r){ // inclusive
-        if(l>r) swap(l,r);
-        return l + (int)(next() % (uint64_t)(r - l + 1));
-    }
-    double uniform(){ return (next() >> 11) * (1.0/9007199254740992.0); }
+    int uniform_int(int l,int r){ if(l>r) swap(l,r); return l + (int)(next()% (uint64_t)(r-l+1)); }
 };
 
 int main(){
@@ -33,99 +28,56 @@ int main(){
     cin.tie(nullptr);
 
     int k; if(!(cin>>k)) return 0;
-    int n; cin>>n;
-    long long m; cin>>m;
-    int s; cin>>s;
+    int n; cin>>n; long long m; cin>>m; int s; cin>>s;
     int N = 2*n;
-    // Hash grid to seed RNG
-    uint64_t h = 1469598103934665603ULL; // FNV offset basis
-    const uint64_t FNV_PRIME = 1099511628211ULL;
-    for(int i=0;i<N;i++){
-        for(int j=0;j<N;j++){
-            int c; cin>>c;
-            h ^= (uint64_t)(c + 1) * 1315423911u + (uint64_t)(((uint64_t)i<<21) ^ ((uint64_t)j<<7));
-            h *= FNV_PRIME;
-        }
-    }
-    uint64_t seed = ((uint64_t)k<<48) ^ ((uint64_t)n<<32) ^ ((uint64_t)(m&0xffffffff)<<1) ^ ((uint64_t)(s&0xffff)<<17) ^ h ^ 0xA5A5A5A5DEADBEEFULL;
+    // Seed by grid
+    uint64_t h = 1469598103934665603ULL, P=1099511628211ULL;
+    for(int i=0;i<N;i++) for(int j=0;j<N;j++){ int c; cin>>c; h^=(uint64_t)(c+3)*(i+1)*(j+7); h*=P; }
+    uint64_t seed = ((uint64_t)k<<48) ^ ((uint64_t)n<<32) ^ (uint64_t)(m*1315423911u) ^ ((uint64_t)s<<5) ^ h ^ 0x9E3779B97F4A7C15ULL;
     RNG rng(seed);
 
-    long long t = m;
-    auto emit = [&](char ch){ cout<<ch<<'\n'; };
-
-    long long cnt = 0;
-    int vx = 0; // intended horizontal speed we track
+    auto emit=[&](char ch){ cout<<ch<<'\n'; };
+    long long t=m, cnt=0; int vx=0;
 
     auto accel_to = [&](int target){
-        while(cnt < t && vx < target){
-            int step = min(2, target - vx);
-            emit(step==2?'E':'D'); vx += step; ++cnt;
-        }
-        while(cnt < t && vx > target){
-            int step = min(2, vx - target);
-            emit(step==2?'A':'B'); vx -= step; ++cnt;
+        while(cnt<t && vx<target){ int d=min(2,target-vx); emit(d==2?'E':'D'); vx+=d; ++cnt; }
+        while(cnt<t && vx>target){ int d=min(2,vx-target); emit(d==2?'A':'B'); vx-=d; ++cnt; }
+    };
+    auto hold = [&](int H){ for(int i=0;i<H && cnt<t;i++){ emit('C'); ++cnt; } };
+    auto micro = [&](int repeats){ // zero-drift jitter
+        for(int i=0;i<repeats && cnt+1<t;i++){
+            if(rng.uniform_int(0,1)==0){ emit('E'); emit('A'); }
+            else { emit('D'); emit('B'); }
+            cnt+=2;
         }
     };
-    auto hold = [&](int c){ for(int i=0;i<c && cnt<t;i++){ emit('C'); ++cnt; } };
-    auto nudge = [&](int dir, int times){ // dir: +1 right, -1 left
-        for(int i=0;i<times && cnt<t;i++){
-            if(dir>0){ emit('D'); vx += 1; }
-            else { emit('B'); vx -= 1; }
-            ++cnt;
-        }
-    };
-    auto clip_vx = [&](int cap){ if(vx>cap) accel_to(cap); else if(vx<-cap) accel_to(-cap); };
 
-    // Parameter ranges based on n
-    int baseV = max(6, n/3);
-    int vmax = max(baseV+4, n/2);
-    int hardCap = max(vmax*3, 20);
-    int holdMin = max(6, n*2);
-    int holdMax = max(holdMin+4, n*10);
+    // Build target speed set from primes scaled by n
+    int scale = max(1, n/6);
+    vector<int> primes = {3,5,7,11,13,17,19};
+    vector<int> targets;
+    for(int p:primes){ long long v=1LL*p*scale; if(v<3) v=3; if(v> (long long)max(20, n)) v = max(20, n); targets.push_back((int)v); }
+    // Shuffle order deterministically
+    for(int i=targets.size()-1;i>0;i--){ int j=rng.uniform_int(0,i); swap(targets[i],targets[j]); }
 
-    // Warm start: light right bias and short hold
-    accel_to(min(baseV, 6));
-    hold(holdMin/2);
+    // Warm start
+    accel_to(min(targets[0], max(4, n/4)));
+    hold(max(4, n*2));
 
-    // Main loop: generate segments until t operations
-    while(cnt < t){
-        // Choose a direction and magnitude
-        int mag = rng.uniform_int(max(3, baseV/2), vmax);
-        int dir = (rng.uniform() < 0.5 ? +1 : -1);
-        // Occasionally force alternation to avoid drift
-        if(rng.uniform() < 0.3){ dir = (vx >= 0 ? -1 : +1); }
-        int target = dir * mag;
-        // Accelerate to target and hold
-        accel_to(target);
-        int H = rng.uniform_int(holdMin, holdMax);
-        hold(H);
-
-        if(cnt >= t) break;
-
-        // Decorrelation: brief counter nudges and partial reset
-        if(rng.uniform() < 0.6){
-            int nud = max(1, mag/8);
-            nudge(-dir, nud);
-        }
-        if(rng.uniform() < 0.25){
-            // Soft reset towards 0 velocity
-            int delta = vx/2; // move halfway to zero
-            int target2 = vx - delta;
-            accel_to(target2);
-            hold(rng.uniform_int(max(2, holdMin/3), holdMin));
-        }
-        // Hard clip to avoid runaway
-        clip_vx(hardCap);
-
-        // Rare full stop and restart to new angle
-        if(rng.uniform() < 0.08){
-            accel_to(0);
-            hold(rng.uniform_int(holdMin/2, holdMin));
-        }
+    // Main schedule: cycle through targets
+    size_t idx=0;
+    while(cnt<t){
+        int V = targets[idx++ % targets.size()];
+        // Right plateau
+        accel_to(+V); hold(max(n, V*3)); micro(rng.uniform_int(1, max(2, n/6)));
+        if(cnt>=t) break;
+        // Left plateau
+        accel_to(-V); hold(max(n, V*3)); micro(rng.uniform_int(1, max(2, n/6)));
+        // Mid-cycle neutral hold occasionally
+        if(rng.uniform_int(0,3)==0){ accel_to(0); hold(max(3, n)); }
     }
 
-    // If any remainder due to bounds, fill with neutral C
-    while(cnt < t){ emit('C'); ++cnt; }
-
+    // Fill remainder with neutral
+    while(cnt<t){ emit('C'); ++cnt; }
     return 0;
 }
