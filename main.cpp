@@ -2,29 +2,30 @@
 using namespace std;
 
 /*
-Simplified heuristic controller for Snooker Brick Out.
-We do not simulate full physics; instead, we output a deterministic
-sequence of operations designed to sweep horizontal velocities and
-encourage coverage. This aims to hit many bricks and keep control count
-reasonable within m.
+Heuristic controller for Snooker Brick Out without full physics.
+We output a structured sequence of operations that "servo" the
+horizontal velocity to sweep right and left with long constant
+segments, hoping to cover the board better than a short repeating
+pattern.
 
-Input:
- k (unused in strategy), n, m, s, then 2n x 2n colors grid (we read it).
-Output:
- t lines of A..E operations, where t <= m. We choose t = m for maximal
- control opportunity; although control score only counts if all bricks
- hit, our heuristic may not clear all. We'll attempt structured sweeps.
+Controls:
+ A: vx -= 2 (left)
+ B: vx -= 1 (left)
+ C: vx += 0
+ D: vx += 1 (right)
+ E: vx += 2 (right)
 
 Strategy:
- - We generate cycles of horizontal pushes left then right to create
-   zig-zag trajectories. Use pattern: E,E,D,C,B,B,A,C,D,D,E, repeated.
- - Length-11 pattern provides varied horizontal velocities and resets.
- - If colored bricks exist, we occasionally bias toward moderate right
-   (D) to diversify; but without simulator, we cannot guarantee 1-2-3.
- - Ensure we print exactly m lines to satisfy simulator upper bound.
+ - Maintain an internal vx variable (our intended horizontal speed).
+ - Repeatedly perform two sweeps:
+   1) Accelerate to +V using E/D, then hold with P times C
+   2) Accelerate to -V using A/B, then hold with P times C
+ - Repeat until we emit t operations (choose t = m).
+ - Choose parameters V and P as functions of n to adapt scale.
 
-This is a baseline to get non-zero scores; future iterations can
-integrate actual simulator from game.h.
+Notes:
+ - This ignores colors; without simulator we cannot target 1-2-3 chain.
+ - Using long C segments reduces unnecessary oscillations.
 */
 
 int main(){
@@ -36,19 +37,62 @@ int main(){
     long long m; cin>>m;
     int s; cin>>s;
     int N = 2*n;
-    vector<int> grid; grid.reserve(1LL*N*N);
     for(int i=0;i<N;i++){
         for(int j=0;j<N;j++){
-            int c; cin>>c; grid.push_back(c);
+            int c; cin>>c; (void)c;
         }
     }
 
-    // Precompute pattern
-    const vector<char> pat = {'E','E','D','C','B','B','A','C','D','D','E'};
-    long long t = m; // choose t=m operations
-    for(long long i=0;i<t;i++){
-        char op = pat[i % pat.size()];
-        cout << op << '\n';
+    long long t = m; // number of operations to output
+
+    // Parameter selection
+    // V: target horizontal velocity magnitude
+    // P: number of holds (C) at each plateau
+    int V = max(6, n/3);           // grows mildly with n
+    int P = max(8, n*6);           // long enough to travel across
+
+    long long emitted = 0;
+    int vx = 0; // intended vx we keep in sync with operations
+
+    auto push_right_to = [&](int target){
+        while(emitted < t && vx < target){
+            int need = target - vx;
+            if(need >= 2){ cout << 'E' << '\n'; vx += 2; }
+            else { cout << 'D' << '\n'; vx += 1; }
+            ++emitted;
+        }
+    };
+    auto push_left_to = [&](int target){
+        while(emitted < t && vx > target){
+            int need = vx - target;
+            if(need >= 2){ cout << 'A' << '\n'; vx -= 2; }
+            else { cout << 'B' << '\n'; vx -= 1; }
+            ++emitted;
+        }
+    };
+    auto hold = [&](int cnt){
+        for(int i=0;i<cnt && emitted < t;i++){
+            cout << 'C' << '\n';
+            ++emitted;
+        }
+    };
+
+    // Warm-up: small right bias to break symmetry
+    push_right_to(min(V, 4));
+    hold(P/2);
+
+    while(emitted < t){
+        // Right sweep
+        push_right_to(V);
+        hold(P);
+        if(emitted >= t) break;
+        // Left sweep
+        push_left_to(-V);
+        hold(P);
     }
+
+    // If underflow due to rounding, fill remaining with neutral C
+    while(emitted < t){ cout << 'C' << '\n'; ++emitted; }
+
     return 0;
 }
