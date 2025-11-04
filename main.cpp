@@ -2,30 +2,11 @@
 using namespace std;
 
 /*
-Heuristic controller for Snooker Brick Out without full physics.
-We output a structured sequence of operations that "servo" the
-horizontal velocity to sweep right and left with long constant
-segments, hoping to cover the board better than a short repeating
-pattern.
-
-Controls:
- A: vx -= 2 (left)
- B: vx -= 1 (left)
- C: vx += 0
- D: vx += 1 (right)
- E: vx += 2 (right)
-
-Strategy:
- - Maintain an internal vx variable (our intended horizontal speed).
- - Repeatedly perform two sweeps:
-   1) Accelerate to +V using E/D, then hold with P times C
-   2) Accelerate to -V using A/B, then hold with P times C
- - Repeat until we emit t operations (choose t = m).
- - Choose parameters V and P as functions of n to adapt scale.
-
-Notes:
- - This ignores colors; without simulator we cannot target 1-2-3 chain.
- - Using long C segments reduces unnecessary oscillations.
+Heuristic controller without full physics.
+Variant: multi-scale sweeps.
+ - Perform sequences with increasing/decreasing target speeds to cover
+   different angles. Between sweeps, insert resets (brief counter-kicks)
+   to decorrelate trajectories.
 */
 
 int main(){
@@ -37,62 +18,58 @@ int main(){
     long long m; cin>>m;
     int s; cin>>s;
     int N = 2*n;
-    for(int i=0;i<N;i++){
-        for(int j=0;j<N;j++){
-            int c; cin>>c; (void)c;
+    for(int i=0;i<N;i++) for(int j=0;j<N;j++){ int c; cin>>c; (void)c; }
+
+    long long t = m;
+
+    auto emit = [&](char ch){ cout<<ch<<'\n'; };
+
+    long long cnt = 0;
+
+    auto accel_to = [&](int &vx, int target){
+        while(cnt < t && vx < target){
+            int step = min(2, target - vx);
+            emit(step==2?'E':'D'); vx += step; ++cnt;
         }
+        while(cnt < t && vx > target){
+            int step = min(2, vx - target);
+            emit(step==2?'A':'B'); vx -= step; ++cnt;
+        }
+    };
+    auto hold = [&](int c){ for(int i=0;i<c && cnt<t;i++){ emit('C'); ++cnt; } };
+    auto nudge = [&](int dir, int times){ // dir: +1 right, -1 left
+        for(int i=0;i<times && cnt<t;i++){
+            if(dir>0){ emit('D'); } else { emit('B'); }
+            ++cnt;
+        }
+    };
+
+    int baseV = max(6, n/3);
+    vector<int> scales = {1, 2, 3, 1, 4, 2};
+    int vx = 0;
+
+    // Warm start
+    accel_to(vx, min(baseV, 5)); hold(max(4, n*3));
+
+    while(cnt < t){
+        for(int sidx=0; sidx<(int)scales.size() && cnt<t; ++sidx){
+            int V = baseV * scales[sidx];
+            V = min(V, 5*baseV); // cap extreme velocities
+            // Right sweep plateau
+            accel_to(vx, V);
+            hold(max(6, n*4));
+            // Reset decorrelation: brief opposite nudges
+            nudge(-1, max(1, V/6));
+            // Left sweep plateau
+            accel_to(vx, -V);
+            hold(max(6, n*4));
+            // Reset decorrelation
+            nudge(+1, max(1, V/6));
+        }
+        // Mid-cycle neutral hold
+        hold(max(8, n*2));
     }
 
-    long long t = m; // number of operations to output
-
-    // Parameter selection
-    // V: target horizontal velocity magnitude
-    // P: number of holds (C) at each plateau
-    int V = max(6, n/3);           // grows mildly with n
-    int P = max(8, n*6);           // long enough to travel across
-
-    long long emitted = 0;
-    int vx = 0; // intended vx we keep in sync with operations
-
-    auto push_right_to = [&](int target){
-        while(emitted < t && vx < target){
-            int need = target - vx;
-            if(need >= 2){ cout << 'E' << '\n'; vx += 2; }
-            else { cout << 'D' << '\n'; vx += 1; }
-            ++emitted;
-        }
-    };
-    auto push_left_to = [&](int target){
-        while(emitted < t && vx > target){
-            int need = vx - target;
-            if(need >= 2){ cout << 'A' << '\n'; vx -= 2; }
-            else { cout << 'B' << '\n'; vx -= 1; }
-            ++emitted;
-        }
-    };
-    auto hold = [&](int cnt){
-        for(int i=0;i<cnt && emitted < t;i++){
-            cout << 'C' << '\n';
-            ++emitted;
-        }
-    };
-
-    // Warm-up: small right bias to break symmetry
-    push_right_to(min(V, 4));
-    hold(P/2);
-
-    while(emitted < t){
-        // Right sweep
-        push_right_to(V);
-        hold(P);
-        if(emitted >= t) break;
-        // Left sweep
-        push_left_to(-V);
-        hold(P);
-    }
-
-    // If underflow due to rounding, fill remaining with neutral C
-    while(emitted < t){ cout << 'C' << '\n'; ++emitted; }
-
+    // Ensure exactly t lines printed (loop maintains it)
     return 0;
 }
