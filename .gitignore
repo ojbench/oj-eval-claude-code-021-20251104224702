@@ -1,0 +1,8 @@
+# Build artifacts
+code
+*.o
+
+# CMake outputs (per OJ requirement)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
